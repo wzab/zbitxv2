@@ -25,7 +25,9 @@ The initial sync between the gui values, the core radio values, settings, et al 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <ifaddrs.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <errno.h>
 #include <cairo.h>
 #include <sys/file.h>
@@ -635,8 +637,10 @@ struct field main_controls[] = {
 		"", 4,6,1,0},
 	{"#passkey", NULL, 1000, -1000, 400, 149, "PASSKEY", 70, "123", FIELD_TEXT, FONT_SMALL, 
 		"", 0,32,1,0},
-        { "#wificonn", NULL, 1000, -1000, 50, 50, "WIFI-CONN", 40, "OFF",FIELD_TOGGLE, FONT_FIELD_VALUE,
-                "ON/OFF", 0,0,0, 0},
+	{ "#wificonn", NULL, 1000, -1000, 50, 50, "WIFI", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
+		"ON/OFF", 0,0,0, 0},
+	{ "#wlan0ip", NULL, 1000, -1000, 50, 50, "IP", 40, "NOT CONNECTED", FIELD_STATIC, FONT_FIELD_VALUE,
+		"", 0,0,0, 0},
 	//moving global variables into fields 	
   { "#vfo_a_freq", NULL, 1000, -1000, 50, 50, "VFOA", 40, "14000000", FIELD_NUMBER, FONT_FIELD_VALUE,
     "", 500000,30000000,1,0},
@@ -4889,6 +4893,61 @@ static void wifi_conn_set(int on)
 }
 
 /*
+   Function for reading the IP address in wlan0
+*/
+
+static void get_wlan0_ip(char *out, size_t out_size)
+{
+    struct ifaddrs *ifaddr, *ifa;
+
+    snprintf(out, out_size, "NOT CONNECTED");
+
+    if (getifaddrs(&ifaddr) == -1)
+        return;
+
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL)
+            continue;
+
+        if (strcmp(ifa->ifa_name, "wlan0"))
+            continue;
+
+        if (ifa->ifa_addr->sa_family != AF_INET)
+            continue;
+
+        if (!(ifa->ifa_flags & IFF_UP))
+            continue;
+
+        struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+
+        if (inet_ntop(AF_INET, &sa->sin_addr, out, out_size) == NULL)
+            snprintf(out, out_size, "NOT CONNECTED");
+
+        break;
+    }
+
+    freeifaddrs(ifaddr);
+}
+
+/*
+   Function for updating the displayed IP information
+*/
+
+static void update_wlan0_ip_field(void)
+{
+    static char last_ip[32] = "";
+    char ip[32];
+
+    get_wlan0_ip(ip, sizeof(ip));
+
+    if (strcmp(ip, last_ip)) {
+        set_field("#wlan0ip", ip);
+        strcpy(last_ip, ip);
+    }
+}
+*/
+
+/*
 	These are user/remote entered commands.
 	The command format is "CMD VALUE", the CMD is an all uppercase text
 	that matches the label of a control.
@@ -5071,7 +5130,7 @@ void cmd_exec(char *cmd){
 		sprintf(buff, "txpitch is set to %d Hz\n", get_cw_tx_pitch());
 		write_console(FONT_LOG, buff);
 	}
-	else if (!strcmp(exec, "WIFI-CONN")) {
+	else if (!strcmp(exec, "WIFI")) {
 		if (!strcmp(args, "ON")) {
 		        set_field("#wificonn", "ON");
 		        wifi_conn_set(1);
@@ -5081,6 +5140,9 @@ void cmd_exec(char *cmd){
 		} else {
 		        write_console(FONT_LOG, "Invalid WIFI-CONN value, use ON or OFF\n");
 		}
+	}
+	else if (!strcmp(exec, "IP?")) {
+		update_wlan0_ip_field();
 	}
 /*	else if (!strcmp(exec, "PITCH")){
 		struct field *f = get_field_by_label(exec);
