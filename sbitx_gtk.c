@@ -4945,7 +4945,6 @@ static void update_wlan0_ip_field(void)
         strcpy(last_ip, ip);
     }
 }
-*/
 
 /*
 	These are user/remote entered commands.
