@@ -639,8 +639,8 @@ struct field main_controls[] = {
 		"", 0,32,1,0},
 	{ "#wificonn", NULL, 1000, -1000, 50, 50, "WIFI", 40, "OFF", FIELD_TOGGLE, FONT_FIELD_VALUE,
 		"ON/OFF", 0,0,0, 0},
-	{ "#wlan0ip", NULL, 1000, -1000, 50, 50, "IP", 40, "NOT CONNECTED", FIELD_STATIC, FONT_FIELD_VALUE,
-		"", 0,0,0, 0},
+	{ "#wlan0ip", NULL, 1000, -1000, 50, 50, "IP", 20, "NOT CONNECTED", FIELD_TEXT, FONT_FIELD_VALUE,
+		"0/20", 0,0,0, 0},
 	//moving global variables into fields 	
   { "#vfo_a_freq", NULL, 1000, -1000, 50, 50, "VFOA", 40, "14000000", FIELD_NUMBER, FONT_FIELD_VALUE,
     "", 500000,30000000,1,0},
@@ -5137,10 +5137,10 @@ void cmd_exec(char *cmd){
 		        set_field("#wificonn", "OFF");
 		        wifi_conn_set(0);
 		} else {
-		        write_console(FONT_LOG, "Invalid WIFI-CONN value, use ON or OFF\n");
+		        write_console(FONT_LOG, "Invalid WIFI value, use ON or OFF\n");
 		}
 	}
-	else if (!strcmp(exec, "IP?")) {
+	else if (!strcmp(exec, "IP?") || !strcmp(exec, "IP")) {
 		update_wlan0_ip_field();
 	}
 /*	else if (!strcmp(exec, "PITCH")){
