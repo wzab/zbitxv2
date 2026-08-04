@@ -404,8 +404,8 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
 		sprintf(time_str, "%02d%02d%02d", t->tm_hour, t->tm_min, t->tm_sec);
 
 		int i;
-		char mycallsign_upper[20];
-		char mycallsign[20];
+		char mycallsign_upper[64];
+		char mycallsign[64];
 		get_field_value("#mycallsign", mycallsign);
 		for (i = 0; i < strlen(mycallsign); i++)
 			mycallsign_upper[i] = toupper(mycallsign[i]);
@@ -598,7 +598,7 @@ void ft8_tx(char *message, int freq){
 
 void *ft8_thread_function(void *ptr){
 	FILE *pf;
-	char buff[1000], mycallsign_upper[20]; //there are many ways to crash sbitx, bufferoverflow of callsigns is 1
+	char buff[1000], mycallsign_upper[64]; //there are many ways to crash sbitx, bufferoverflow of callsigns is 1
 
 	//wake up every 100 msec to see if there is anything to decode
 	while(1){
@@ -692,7 +692,7 @@ float ft8_next_sample(){
 }
 
 /* these are used to process the current message */
-static char m1[32], m2[32], m3[32], m4[32], signal_strength[10], mygrid[10],
+static char m1[64], m2[64], m3[64], m4[64], signal_strength[10], mygrid[16],
 	reply_message[100];
 static int rx_pitch, tx_pitch, confidence_score, msg_time; 
 static const char *call, *exchange, *report_send, *report_received, *mycall;

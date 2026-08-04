@@ -1,0 +1,23 @@
+# Regression vectors for application-level FT8 handling.
+# Each non-comment line is a message that must encode without truncation.
+# Sequences below must retain both full callsigns in the QSO state/cache.
+
+CQ OE/SP5DAA JN66
+DL/SP5XYZ/P OE/SP5DAA JN66
+OE/SP5DAA DL/SP5XYZ/P -10
+DL/SP5XYZ/P OE/SP5DAA R-08
+OE/SP5DAA DL/SP5XYZ/P RR73
+DL/SP5XYZ/P OE/SP5DAA 73
+
+CQ F/ON4ABC/P JN18
+OE/SP5DAA/P F/ON4ABC/P -12
+F/ON4ABC/P OE/SP5DAA/P R-09
+OE/SP5DAA/P F/ON4ABC/P RRR
+F/ON4ABC/P OE/SP5DAA/P 73
+
+# Negative/cache cases to verify with captured frames or library tests:
+# 1. both hashed calls known
+# 2. only first hashed call known
+# 3. only second hashed call known
+# 4. neither hashed call known: do not bind to current QSO
+# 5. hash collision: do not silently select the wrong station
