@@ -8,6 +8,7 @@ SRCS = vfo.c si570.c sbitx_sound.c fft_filter.c sbitx_gtk.c sbitx_utils.c       
 
 OBJS    = $(SRCS:.c=.o)
 FT8_LIB = ft8_lib/libft8.a
+FT8_DEPS = $(wildcard ft8_lib/ft8/*.c ft8_lib/ft8/*.h ft8_lib/common/*.c ft8_lib/common/*.h) ft8_lib/Makefile
 
 .PHONY: all clean
 
@@ -15,6 +16,9 @@ all: audio data web data/sbitx.db $(TARGET)
 
 $(TARGET): $(OBJS) $(FT8_LIB)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(FT8_LIB): $(FT8_DEPS)
+	$(MAKE) -C ft8_lib libft8.a
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -27,3 +31,4 @@ data/sbitx.db: | data
 
 clean:
 	rm -f $(OBJS) $(TARGET)
+	$(MAKE) -C ft8_lib clean
