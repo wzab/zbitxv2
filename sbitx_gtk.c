@@ -630,7 +630,7 @@ struct field main_controls[] = {
 
 	// Settings Panel
 	{"#mycallsign", NULL, 1000, -1000, 400, 149, "MYCALLSIGN", 70, "CALL", FIELD_TEXT, FONT_SMALL, 
-		"", 3,10,1,0},
+		"", 3,11,1,0},
 	{"#mygrid", NULL, 1000, -1000, 400, 149, "MYGRID", 70, "NOWHERE", FIELD_TEXT, FONT_SMALL, 
 		"", 4,6,1,0},
 	{"#passkey", NULL, 1000, -1000, 400, 149, "PASSKEY", 70, "123", FIELD_TEXT, FONT_SMALL, 
@@ -2924,7 +2924,7 @@ int do_text(struct field *f, cairo_t *gfx, int event, int a, int b, int c){
 			ft8_tx(f->value, field_int("TX_PITCH"));
 			f->value[0] = 0;		
 		}
-		else if (a >= ' ' && a <= 127 && strlen(f->value) < f->max-1){
+		else if (a >= ' ' && a <= 127 && strlen(f->value) < f->max){
 			int l = strlen(f->value);
 			f->value[l++] = a;
 			f->value[l] = 0;

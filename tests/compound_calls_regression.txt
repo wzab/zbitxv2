@@ -21,3 +21,10 @@ F/ON4ABC/P OE/SP5DAA/P 73
 # 3. only second hashed call known
 # 4. neither hashed call known: do not bind to current QSO
 # 5. hash collision: do not silently select the wrong station
+
+# Interoperability cases observed with reference WSJT-X
+CQ OK/SP5DAA/P
+CQ XY/TE5THF AB09
+SP5DAA XY/TE5THF AB09
+XY/TE5THF SP5DAA +33
+SP5DAA XY/TE5THF R+03

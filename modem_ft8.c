@@ -833,6 +833,24 @@ static char m1[64], m2[64], m3[64], m4[64], signal_strength[10], mygrid[16],
 static int rx_pitch, tx_pitch, confidence_score, msg_time; 
 static const char *call, *exchange, *report_send, *report_received, *mycall;
 
+static int ft8_copy_message_token(char *destination, size_t destination_size, const char *source)
+{
+	size_t length = strlen(source);
+	if (length >= destination_size)
+		return -1;
+	memcpy(destination, source, length + 1);
+	return 0;
+}
+
+static void ft8_unwrap_hashed_callsign(char *callsign)
+{
+	size_t length = strlen(callsign);
+	if (length > 2 && callsign[0] == '<' && callsign[length - 1] == '>' && strcmp(callsign, "<...>")){
+		memmove(callsign, callsign + 1, length - 2);
+		callsign[length - 2] = '\0';
+	}
+}
+
 int ft8_message_tokenize(char *message){
 	char *p;
 
@@ -846,8 +864,8 @@ int ft8_message_tokenize(char *message){
 	confidence_score = atoi(p);
 
 	p = strtok(NULL, " \r\n");
-	if (!p) return -1;
-	strcpy(signal_strength, p);
+	if (!p || ft8_copy_message_token(signal_strength, sizeof(signal_strength), p) < 0)
+		return -1;
 
 	p = strtok(NULL, " \r\n");
 	if (!p) return -1;
@@ -861,20 +879,24 @@ int ft8_message_tokenize(char *message){
 		return -1;
 
 	p = strtok(NULL, " \r\n");
-	if (!p) return -1;
-	strcpy(m1, p);
+	if (!p || ft8_copy_message_token(m1, sizeof(m1), p) < 0)
+		return -1;
+	ft8_unwrap_hashed_callsign(m1);
 
 	p = strtok(NULL, " \r\n");
-	if (!p) return -1;
-	strcpy(m2, p);
+	if (!p || ft8_copy_message_token(m2, sizeof(m2), p) < 0)
+		return -1;
+	ft8_unwrap_hashed_callsign(m2);
 
 	p = strtok(NULL, " \r\n");
 	if (p){
-		strcpy(m3, p);
+		if (ft8_copy_message_token(m3, sizeof(m3), p) < 0)
+			return -1;
 
 		p = strtok(NULL, " \r\n");
 		if (p){
-			strcpy(m4, p);
+			if (ft8_copy_message_token(m4, sizeof(m4), p) < 0)
+				return -1;
 		}
 		else 
 			m4[0] = 0;

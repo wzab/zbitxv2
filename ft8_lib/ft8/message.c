@@ -11,6 +11,9 @@
 #define NTOKENS  ((uint32_t)2063592ul)
 #define MAXGRID4 ((uint16_t)32400ul)
 
+#define FTX_MAX_CALLSIGN_LENGTH  11
+#define FTX_CALLSIGN_BUFFER_SIZE (FTX_MAX_CALLSIGN_LENGTH + 1)
+
 ////////////////////////////////////////////////////// Static function prototypes //////////////////////////////////////////////////////////////
 
 static void add_brackets(char* result, const char* original, int length);
@@ -118,58 +121,55 @@ ftx_message_type_t ftx_message_get_type(const ftx_message_t* msg)
 
 ftx_message_rc_t ftx_message_encode(ftx_message_t* msg, ftx_callsign_hash_interface_t* hash_if, const char* message_text)
 {
-    char call_to[12];
-    char call_de[12];
-    char extra[20];
+    char call_to[FTX_CALLSIGN_BUFFER_SIZE] = { 0 };
+    char call_de[FTX_CALLSIGN_BUFFER_SIZE] = { 0 };
+    char extra[20] = { 0 };
 
     const char* parse_position = message_text;
     const bool is_cq = starts_with(message_text, "CQ");
     if (is_cq) {
         parse_position += 3;
-        parse_position = copy_token(call_to, 12, parse_position);
+        parse_position = copy_token(call_to, sizeof(call_to), parse_position);
+        if (call_to[sizeof(call_to) - 1] != '\0')
+            return FTX_MESSAGE_RC_ERROR_CALLSIGN1;
+
         const bool is_call_to = likely_callsign(call_to);
         LOG(LOG_DEBUG, "next token after CQ: %s in %s; callsign %d\n", call_to, message_text, is_call_to);
         if (is_call_to) {
             // the callsign after CQ should be call_de: it will be re-read below
-            sprintf(call_to, "CQ");
+            strcpy(call_to, "CQ");
             parse_position = message_text + 3;
         } else {
             // the word after CQ is probably not a callsign: see if it matches the abcd or nnn pattern
             int cq_special_v = cq_special(call_to);
             if (cq_special_v >= 0) {
-                char temp[12];
+                char temp[FTX_CALLSIGN_BUFFER_SIZE];
                 strcpy(temp, call_to);
-                sprintf(call_to, "CQ_%s", temp);
+                strcpy(call_to, "CQ_");
+                strcat(call_to, temp); // cq_special() accepts at most four characters
             } else {
                 // can't encode it as special CQ, not a callsign either: ignore it
-                sprintf(call_to, "CQ");
+                strcpy(call_to, "CQ");
             }
             LOG(LOG_DEBUG, "special %d; parse_pos after CQ: %s in %s\n", cq_special_v, parse_position, message_text);
         }
     } else {
-        parse_position = copy_token(call_to, 12, parse_position);
+        parse_position = copy_token(call_to, sizeof(call_to), parse_position);
+        if (call_to[sizeof(call_to) - 1] != '\0')
+            return FTX_MESSAGE_RC_ERROR_CALLSIGN1;
     }
-    // now we are fairly sure the next word should be the "de" callsign
-    parse_position = copy_token(call_de, 12, parse_position);
-    // and the word after that may be a grid or signal report
-    parse_position = copy_token(extra, 20, parse_position);
-    const bool is_call_de = likely_callsign(call_de);
 
-    if (call_to[11] != '\0')
-    {
-        // token too long
-        return FTX_MESSAGE_RC_ERROR_CALLSIGN1;
-    }
-    if (call_de[11] != '\0')
-    {
-        // token too long
+    // now we are fairly sure the next word should be the "de" callsign
+    parse_position = copy_token(call_de, sizeof(call_de), parse_position);
+    if (call_de[sizeof(call_de) - 1] != '\0')
         return FTX_MESSAGE_RC_ERROR_CALLSIGN2;
-    }
-    if (extra[19] != '\0')
-    {
-        // token too long
+
+    // and the word after that may be a grid or signal report
+    parse_position = copy_token(extra, sizeof(extra), parse_position);
+    if (extra[sizeof(extra) - 1] != '\0')
         return FTX_MESSAGE_RC_ERROR_GRID;
-    }
+
+    const bool is_call_de = likely_callsign(call_de);
 
     LOG(LOG_DEBUG, "parsed '%s' '%s' %d '%s'; remaining chars '%s'\n", call_to, call_de, is_call_de, extra, parse_position);
 
@@ -281,7 +281,7 @@ ftx_message_rc_t ftx_message_encode_nonstd(ftx_message_t* msg, ftx_callsign_hash
     {
         // choose which of the callsigns to encode as plain-text (58 bits) or hash (12 bits)
         iflip = 0; // call_de will be sent plain-text
-        if (call_de[0] == '<' && call_de[len_call_to - 1] == '>')
+        if (len_call_de >= 2 && call_de[0] == '<' && call_de[len_call_de - 1] == '>')
         {
             iflip = 1;
         }
@@ -525,7 +525,7 @@ ftx_message_rc_t ftx_message_decode_nonstd(const ftx_message_t* msg, ftx_callsig
 
     // Extract i3 (bits 74..76)
     uint8_t i3 = (msg->payload[9] >> 3) & 0x07u;
-    LOG(LOG_DEBUG, "decode_nonstd() n12=%04x n58=%08llx iflip=%d nrpt=%d icq=%d i3=%d\n", n12, n58, iflip, nrpt, icq, i3);
+    LOG(LOG_DEBUG, "decode_nonstd() n12=%04x n58=%08llx iflip=%d nrpt=%d icq=%d i3=%d\n", n12, (unsigned long long)n58, iflip, nrpt, icq, i3);
 
     // Decode one of the calls from 58 bit encoded string
     char call_decoded[14];
@@ -660,27 +660,42 @@ static void add_brackets(char* result, const char* original, int length)
 
 static bool save_callsign(const ftx_callsign_hash_interface_t* hash_if, const char* callsign, uint32_t* n22_out, uint16_t* n12_out, uint16_t* n10_out)
 {
-    uint64_t n58 = 0;
-    int i = 0;
-    while (callsign[i] != '\0' && i < 11)
+    const char* first = callsign;
+    size_t length = strlen(callsign);
+
+    // A bracketed callsign denotes a callsign represented by a hash. Store and
+    // hash the actual callsign, not the angle brackets used for presentation.
+    if (length >= 2 && callsign[0] == '<' && callsign[length - 1] == '>')
     {
-        int j = nchar(callsign[i], FT8_CHAR_TABLE_ALPHANUM_SPACE_SLASH);
+        first++;
+        length -= 2;
+    }
+
+    if (length == 0 || length > FTX_MAX_CALLSIGN_LENGTH)
+        return false;
+
+    uint64_t n58 = 0;
+    char normalized[FTX_CALLSIGN_BUFFER_SIZE];
+    for (size_t i = 0; i < length; ++i)
+    {
+        if (first[i] == '<' || first[i] == '>')
+            return false;
+        int j = nchar(first[i], FT8_CHAR_TABLE_ALPHANUM_SPACE_SLASH);
         if (j < 0)
             return false; // hash error (wrong character set)
+        normalized[i] = first[i];
         n58 = (38 * n58) + j;
-        i++;
     }
+    normalized[length] = '\0';
+
     // pretend to have trailing whitespace (with j=0, index of ' ')
-    while (i < 11)
-    {
-        n58 = (38 * n58);
-        i++;
-    }
+    for (size_t i = length; i < FTX_MAX_CALLSIGN_LENGTH; ++i)
+        n58 *= 38;
 
     uint32_t n22 = ((47055833459ull * n58) >> (64 - 22)) & (0x3FFFFFul);
     uint32_t n12 = n22 >> 10;
     uint32_t n10 = n22 >> 12;
-    LOG(LOG_DEBUG, "save_callsign('%s') = [n22=%d, n12=%d, n10=%d]\n", callsign, n22, n12, n10);
+    LOG(LOG_DEBUG, "save_callsign('%s') = [n22=%d, n12=%d, n10=%d]\n", normalized, n22, n12, n10);
 
     if (n22_out != NULL)
         *n22_out = n22;
@@ -690,7 +705,7 @@ static bool save_callsign(const ftx_callsign_hash_interface_t* hash_if, const ch
         *n10_out = n10;
 
     if (hash_if != NULL)
-        hash_if->save_hash(callsign, n22);
+        hash_if->save_hash(normalized, n22);
 
     return true;
 }
@@ -779,29 +794,35 @@ static int32_t pack_basecall(const char* callsign, int length)
 // returns the numeric value if it matches CQ_nnn or CQ_abcd, otherwise -1
 static int cq_special(const char* string)
 {
-    int nnum = 0, nlet = 0;
+    const char* argument = starts_with(string, "CQ_") ? string + 3 : string;
+    size_t length = strlen(argument);
 
-    // encode CQ_nnn or CQ_abcd
-    int m = 0;
-    for (int i = 3; i < 7; ++i) {
-        if (!string[i] || isspace(string[i]))
-            break;
-        else if (isdigit(string[i]))
-            ++nnum;
-        else if (isalpha(string[i])) {
-            ++nlet;
-            m = 27 * m + (string[i] - 'A' + 1);
+    if (length == 3)
+    {
+        bool all_digits = true;
+        for (size_t i = 0; i < length; ++i)
+            all_digits = all_digits && isdigit((unsigned char)argument[i]);
+        if (all_digits)
+        {
+            LOG(LOG_DEBUG, "CQ_nnn detected: %d\n", atoi(argument));
+            return atoi(argument);
         }
     }
-    //~ LOG(LOG_DEBUG, "CQ_nnn/CQ_abcd '%s' %d/%d\n", string, nnum, nlet);
-    if (nnum == 3 && nlet == 0) {
-        LOG(LOG_DEBUG, "CQ_nnn detected: %d\n", atoi(string + 3));
-        return atoi(string + 3);
+
+    if (length >= 1 && length <= 4)
+    {
+        int value = 0;
+        for (size_t i = 0; i < length; ++i)
+        {
+            if (!isalpha((unsigned char)argument[i]))
+                return -1;
+            value = 27 * value + (toupper((unsigned char)argument[i]) - 'A' + 1);
+        }
+        LOG(LOG_DEBUG, "CQ_a[bcd] detected: m %d\n", value);
+        return 1000 + value;
     }
-    else if (nlet <= 4) {
-        LOG(LOG_DEBUG, "CQ_a[bcd] detected: m %d\n", m);
-        return 1000 + m;
-    }
+
+    return -1;
 }
 
 static int32_t pack28(const char* callsign, const ftx_callsign_hash_interface_t* hash_if, uint8_t* ip)
@@ -990,22 +1011,29 @@ static int unpack28(uint32_t n28, uint8_t ip, uint8_t i3, const ftx_callsign_has
 
 static bool pack58(const ftx_callsign_hash_interface_t* hash_if, const char* callsign, uint64_t* n58)
 {
-    // Decode one of the calls from 58 bit encoded string
-    const char* src = callsign;
-    if (*src == '<')
-        src++;
-    int length = 0;
-    uint64_t result = 0;
-    char c11[12];
-    while (*src != '\0' && *src != '<' && (length < 11))
+    const char* first = callsign;
+    size_t length = strlen(callsign);
+
+    if (length >= 2 && callsign[0] == '<' && callsign[length - 1] == '>')
     {
-        c11[length] = *src;
-        int j = nchar(*src, FT8_CHAR_TABLE_ALPHANUM_SPACE_SLASH);
+        first++;
+        length -= 2;
+    }
+
+    if (length == 0 || length > FTX_MAX_CALLSIGN_LENGTH)
+        return false;
+
+    uint64_t result = 0;
+    char c11[FTX_CALLSIGN_BUFFER_SIZE];
+    for (size_t i = 0; i < length; ++i)
+    {
+        if (first[i] == '<' || first[i] == '>')
+            return false;
+        int j = nchar(first[i], FT8_CHAR_TABLE_ALPHANUM_SPACE_SLASH);
         if (j < 0)
             return false;
+        c11[i] = first[i];
         result = (result * 38) + j;
-        src++;
-        length++;
     }
     c11[length] = '\0';
 
@@ -1013,7 +1041,7 @@ static bool pack58(const ftx_callsign_hash_interface_t* hash_if, const char* cal
         return false;
 
     *n58 = result;
-    LOG(LOG_DEBUG, "pack58('%s')=%016llx\n", callsign, *n58);
+    LOG(LOG_DEBUG, "pack58('%s')=%016llx\n", callsign, (unsigned long long)*n58);
     return true;
 }
 
@@ -1033,7 +1061,7 @@ static bool unpack58(uint64_t n58, const ftx_callsign_hash_interface_t* hash_if,
     // The decoded string will be right-aligned, so trim all whitespace (also from back just in case)
     trim_copy(callsign, c11);
 
-    LOG(LOG_DEBUG, "unpack58(%016llx)=%s\n", n58_backup, callsign);
+    LOG(LOG_DEBUG, "unpack58(%016llx)=%s\n", (unsigned long long)n58_backup, callsign);
 
     // Save the decoded call in a hash table for later
     if (strlen(callsign) >= 3)

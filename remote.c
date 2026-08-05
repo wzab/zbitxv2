@@ -19,6 +19,7 @@
 #include <wiringPi.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <poll.h>
 #include "sdr.h"
 #include "sdr_ui.h"
 #include "logbook.h"
@@ -38,9 +39,37 @@ struct remote {
 
 static struct remote remote_table[MAX_THREADS];
 
-static void remote_send(int fd, char *m) {
- //send(fd, m, strlen(m), MSG_DONTWAIT);
- send(fd, m, strlen(m), MSG_NOSIGNAL | MSG_DONTWAIT);
+static pthread_mutex_t remote_send_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static int remote_send(int fd, const char *message) {
+	const char *position = message;
+	size_t remaining = strlen(message);
+	int result = 0;
+
+	pthread_mutex_lock(&remote_send_mutex);
+	while (remaining > 0){
+		ssize_t written = send(fd, position, remaining, MSG_NOSIGNAL | MSG_DONTWAIT);
+		if (written > 0){
+			position += written;
+			remaining -= (size_t)written;
+			continue;
+		}
+		if (written < 0 && errno == EINTR)
+			continue;
+		if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)){
+			struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+			int poll_result;
+			do {
+				poll_result = poll(&pfd, 1, 1000);
+			} while (poll_result < 0 && errno == EINTR);
+			if (poll_result > 0)
+				continue;
+		}
+		result = -1;
+		break;
+	}
+	pthread_mutex_unlock(&remote_send_mutex);
+	return result;
 }
 
 static void remote_update(struct remote *r){
@@ -147,7 +176,7 @@ void *fn_remote_client(void *fd_client){
 
 		now = millis();
 		memset(buffer, 0, sizeof(buffer));
-  	int len = recv(r->fd, buffer, sizeof(buffer), 0);
+	int len = recv(r->fd, buffer, sizeof(buffer) - 1, 0);
   	if (len > 0){
     	buffer[len] = '\0'; // Ensure the buffer is null-terminated: W9JES
     	// Strip off the last \r or \n

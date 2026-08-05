@@ -10,7 +10,7 @@ OBJS    = $(SRCS:.c=.o)
 FT8_LIB = ft8_lib/libft8.a
 FT8_DEPS = $(wildcard ft8_lib/ft8/*.c ft8_lib/ft8/*.h ft8_lib/common/*.c ft8_lib/common/*.h) ft8_lib/Makefile
 
-.PHONY: all clean
+.PHONY: all clean test
 
 all: audio data web data/sbitx.db $(TARGET)
 
@@ -32,3 +32,7 @@ data/sbitx.db: | data
 clean:
 	rm -f $(OBJS) $(TARGET)
 	$(MAKE) -C ft8_lib clean
+
+# Standalone FT8 regression test; does not require GTK or Raspberry Pi libraries.
+test:
+	$(MAKE) -C tests run
