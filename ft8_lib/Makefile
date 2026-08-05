@@ -37,7 +37,7 @@ run_tests: test_ft8
 	@./test_ft8
 
 install: libft8.a
-	$(AR) rc libft8.a $(FT8_OBJ) $(COMMON_OBJ)
+	$(AR) rc libft8.a $(FT8_OBJ) $(COMMON_OBJ) $(FFT_OBJ)
 	install libft8.a /usr/lib/libft8.a
 
 gen_ft8: $(BUILD_DIR)/demo/gen_ft8.o libft8.a
@@ -55,5 +55,5 @@ $(BUILD_DIR)/%.o: %.c
 
 lib: libft8.a
 
-libft8.a: $(FT8_OBJ) $(COMMON_OBJ)
-	$(AR) rc libft8.a $(FT8_OBJ) $(COMMON_OBJ)
+libft8.a: $(FT8_OBJ) $(COMMON_OBJ) $(FFT_OBJ)
+	$(AR) rc libft8.a $(FT8_OBJ) $(COMMON_OBJ) $(FFT_OBJ)
