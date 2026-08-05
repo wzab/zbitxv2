@@ -851,6 +851,36 @@ static void ft8_unwrap_hashed_callsign(char *callsign)
 	}
 }
 
+static bool ft8_callsign_requires_type4(const char *callsign)
+{
+	char probe_text[FTX_MAX_MESSAGE_LENGTH];
+	ftx_message_t probe;
+	int length = snprintf(probe_text, sizeof(probe_text), "CQ %s", callsign);
+	if (length < 0 || (size_t)length >= sizeof(probe_text))
+		return false;
+	ftx_message_init(&probe);
+	if (ftx_message_encode(&probe, NULL, probe_text) != FTX_MESSAGE_RC_OK)
+		return false;
+	return ftx_message_get_type(&probe) == FTX_MESSAGE_TYPE_NONSTD_CALL;
+}
+
+static int ft8_format_initial_reply(char *destination, size_t destination_size,
+	const char *dx_call, const char *own_call, const char *grid)
+{
+	int length;
+	if (ft8_callsign_requires_type4(dx_call) || ft8_callsign_requires_type4(own_call))
+	{
+		// WSJT-X type-4 initial reply: hash the called station, transmit the
+		// other callsign in full, and omit the grid (type 4 cannot carry it).
+		length = snprintf(destination, destination_size, "<%s> %s", dx_call, own_call);
+	}
+	else
+	{
+		length = snprintf(destination, destination_size, "%s %s %s", dx_call, own_call, grid);
+	}
+	return (length >= 0 && (size_t)length < destination_size) ? 0 : -1;
+}
+
 int ft8_message_tokenize(char *message){
 	char *p;
 
@@ -928,7 +958,8 @@ void ft8_on_start_qso(char *message){
     if (!strcmp(m2, mycall)){ // own transmission clicked - restart qso
 		field_set("CALL", m1);
 		call = m1;
-		sprintf(reply_message, "%s %s %s", call, mycall, mygrid); //
+		if (ft8_format_initial_reply(reply_message, sizeof(reply_message), call, mycall, mygrid) < 0)
+			return;
 	}
 	else if (!strcmp(m1, "CQ")){
 		if (m4[0]){
@@ -941,7 +972,8 @@ void ft8_on_start_qso(char *message){
 			field_set("EXCH", m3);
 			field_set("SENT", signal_strength);
 		}
-		sprintf(reply_message, "%s %s %s", call, mycall, mygrid);
+		if (ft8_format_initial_reply(reply_message, sizeof(reply_message), call, mycall, mygrid) < 0)
+			return;
 	}
 	//whoa, someone cold called us
 	else if (!strcmp(m1, mycall)){
@@ -970,7 +1002,8 @@ void ft8_on_start_qso(char *message){
 			field_set("EXCH", "");
 		}
 		field_set("SENT", signal_strength);
-		sprintf(reply_message, "%s %s %s", call, mycall, mygrid); //signal_strength);
+		if (ft8_format_initial_reply(reply_message, sizeof(reply_message), call, mycall, mygrid) < 0)
+			return;
 	}
 	field_set("NR", mygrid);
 	ft8_tx(reply_message, tx_pitch);

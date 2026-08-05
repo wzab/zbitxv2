@@ -108,6 +108,14 @@ static int check_boundary_cases(void)
         ++failures;
     }
 
+    ftx_message_init(&message);
+    if (ftx_message_encode(&message, &hash_interface,
+            "<OK/SP5DAA/P> SP5DAA") != FTX_MESSAGE_RC_OK
+        || ftx_message_get_type(&message) != FTX_MESSAGE_TYPE_NONSTD_CALL)
+    {
+        fprintf(stderr, "FAIL: 11-character bracketed callsign was not encoded as type 4\n");
+        ++failures;
+    }
     hash_cache_reset();
     ftx_message_init(&message);
     if (ftx_message_encode(&message, &hash_interface,
@@ -132,6 +140,83 @@ static int check_boundary_cases(void)
 
     if (failures == 0)
         printf("PASS boundary, bracket and hash-cache tests\n");
+    return (int)failures;
+}
+
+static void payload_to_bits(const uint8_t payload[FTX_PAYLOAD_LENGTH_BYTES], char bits[78])
+{
+    for (unsigned i = 0; i < 77; ++i)
+        bits[i] = (payload[i / 8] & (uint8_t)(1u << (7u - (i % 8u)))) ? '1' : '0';
+    bits[77] = '\0';
+}
+
+static void tones_to_text(const uint8_t tones[FT8_NN], char text[FT8_NN + 1])
+{
+    for (unsigned i = 0; i < FT8_NN; ++i)
+        text[i] = (char)('0' + tones[i]);
+    text[FT8_NN] = '\0';
+}
+
+static int check_wsjt_x_reference_vectors(void)
+{
+    static const struct
+    {
+        const char* message;
+        const char* payload_bits;
+        const char* tones;
+    } vectors[] = {
+        {
+            "CQ OK/SP5DAA",
+            "11011011001000000000000110010100100101011001010100110011001000111101010001100",
+            "3140652444300015611343615431735203223140652107203231303007374044717653173140652"
+        },
+        {
+            "CQ OK/SP5DAA/P",
+            "11011011001010001110101000011011101111011001010001110110001011100011000001100",
+            "3140652444352630472443526537040212343140652457134237506773737420164346203140652"
+        },
+        {
+            "<SP5DAA> DL/RT3REW",
+            "00011010101100000000000011100111000000101110100001101001111010010010110000100",
+            "3140652046200007140126023245565116033140652603537612700664041645607710073140652"
+        },
+    };
+
+    unsigned failures = 0;
+    for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); ++i)
+    {
+        ftx_message_t message;
+        uint8_t tones[FT8_NN];
+        char actual_bits[78];
+        char actual_tones[FT8_NN + 1];
+        ftx_message_init(&message);
+        ftx_message_rc_t rc = ftx_message_encode(&message, &hash_interface, vectors[i].message);
+        if (rc != FTX_MESSAGE_RC_OK)
+        {
+            fprintf(stderr, "FAIL WSJT-X vector %zu: encode rc=%d: %s\n",
+                i + 1, (int)rc, vectors[i].message);
+            ++failures;
+            continue;
+        }
+        payload_to_bits(message.payload, actual_bits);
+        if (strcmp(actual_bits, vectors[i].payload_bits) != 0)
+        {
+            fprintf(stderr, "FAIL WSJT-X vector %zu payload: %s\n  expected %s\n  actual   %s\n",
+                i + 1, vectors[i].message, vectors[i].payload_bits, actual_bits);
+            ++failures;
+            continue;
+        }
+        ft8_encode(message.payload, tones);
+        tones_to_text(tones, actual_tones);
+        if (strcmp(actual_tones, vectors[i].tones) != 0)
+        {
+            fprintf(stderr, "FAIL WSJT-X vector %zu tones: %s\n  expected %s\n  actual   %s\n",
+                i + 1, vectors[i].message, vectors[i].tones, actual_tones);
+            ++failures;
+            continue;
+        }
+        printf("PASS WSJT-X reference vector: %s\n", vectors[i].message);
+    }
     return (int)failures;
 }
 
@@ -257,6 +342,8 @@ int main(int argc, char** argv)
 
     fclose(file);
     failures += (unsigned)check_boundary_cases();
-    printf("%u vectors tested, %u failures\n", tested, failures);
+    failures += (unsigned)check_wsjt_x_reference_vectors();
+    printf("%u text vectors plus 3 WSJT-X reference vectors tested, %u failures\n",
+        tested, failures);
     return failures ? 1 : 0;
 }

@@ -13,10 +13,12 @@
 
 #define FTX_MAX_CALLSIGN_LENGTH  11
 #define FTX_CALLSIGN_BUFFER_SIZE (FTX_MAX_CALLSIGN_LENGTH + 1)
+#define FTX_BRACKETED_CALLSIGN_BUFFER_SIZE (FTX_MAX_CALLSIGN_LENGTH + 3)
 
 ////////////////////////////////////////////////////// Static function prototypes //////////////////////////////////////////////////////////////
 
 static void add_brackets(char* result, const char* original, int length);
+static bool callsign_token_length_ok(const char* token);
 
 /// Compute hash value for a callsign and save it in a hash table via the provided callsign hash interface.
 /// @param[in] hash_if  Callsign hash interface
@@ -121,8 +123,8 @@ ftx_message_type_t ftx_message_get_type(const ftx_message_t* msg)
 
 ftx_message_rc_t ftx_message_encode(ftx_message_t* msg, ftx_callsign_hash_interface_t* hash_if, const char* message_text)
 {
-    char call_to[FTX_CALLSIGN_BUFFER_SIZE] = { 0 };
-    char call_de[FTX_CALLSIGN_BUFFER_SIZE] = { 0 };
+    char call_to[FTX_BRACKETED_CALLSIGN_BUFFER_SIZE] = { 0 };
+    char call_de[FTX_BRACKETED_CALLSIGN_BUFFER_SIZE] = { 0 };
     char extra[20] = { 0 };
 
     const char* parse_position = message_text;
@@ -130,7 +132,7 @@ ftx_message_rc_t ftx_message_encode(ftx_message_t* msg, ftx_callsign_hash_interf
     if (is_cq) {
         parse_position += 3;
         parse_position = copy_token(call_to, sizeof(call_to), parse_position);
-        if (call_to[sizeof(call_to) - 1] != '\0')
+        if (call_to[sizeof(call_to) - 1] != '\0' || !callsign_token_length_ok(call_to))
             return FTX_MESSAGE_RC_ERROR_CALLSIGN1;
 
         const bool is_call_to = likely_callsign(call_to);
@@ -155,13 +157,13 @@ ftx_message_rc_t ftx_message_encode(ftx_message_t* msg, ftx_callsign_hash_interf
         }
     } else {
         parse_position = copy_token(call_to, sizeof(call_to), parse_position);
-        if (call_to[sizeof(call_to) - 1] != '\0')
+        if (call_to[sizeof(call_to) - 1] != '\0' || !callsign_token_length_ok(call_to))
             return FTX_MESSAGE_RC_ERROR_CALLSIGN1;
     }
 
     // now we are fairly sure the next word should be the "de" callsign
     parse_position = copy_token(call_de, sizeof(call_de), parse_position);
-    if (call_de[sizeof(call_de) - 1] != '\0')
+    if (call_de[sizeof(call_de) - 1] != '\0' || !callsign_token_length_ok(call_de))
         return FTX_MESSAGE_RC_ERROR_CALLSIGN2;
 
     // and the word after that may be a grid or signal report
@@ -174,7 +176,19 @@ ftx_message_rc_t ftx_message_encode(ftx_message_t* msg, ftx_callsign_hash_interf
     LOG(LOG_DEBUG, "parsed '%s' '%s' %d '%s'; remaining chars '%s'\n", call_to, call_de, is_call_de, extra, parse_position);
 
     ftx_message_rc_t rc;
+    const size_t call_to_length = strlen(call_to);
+    const bool explicit_hashed_call_to = call_to_length >= 2
+        && call_to[0] == '<' && call_to[call_to_length - 1] == '>';
     if (is_call_de) {
+        // An explicitly bracketed first call requests a type-4 message.  Trying
+        // the standard encoder first would encode both calls as hashes and is
+        // not interoperable with WSJT-X for a nonstandard-call reply.
+        if (explicit_hashed_call_to) {
+            rc = ftx_message_encode_nonstd(msg, hash_if, call_to, call_de, extra);
+            if (rc == FTX_MESSAGE_RC_OK)
+                return rc;
+            LOG(LOG_DEBUG, "   explicit ftx_message_encode_nonstd failed: %d\n", rc);
+        }
         rc = ftx_message_encode_std(msg, hash_if, call_to, call_de, extra);
         if (rc == FTX_MESSAGE_RC_OK)
             return rc;
@@ -297,9 +311,13 @@ ftx_message_rc_t ftx_message_encode_nonstd(ftx_message_t* msg, ftx_callsign_hash
     else
     {
         iflip = 0;
-        n12 = 0;
         call58 = call_de;
-        LOG(LOG_DEBUG, "CQ: 58-bit '%s'; omitting grid '%s'\n", call58, extra);
+        // WSJT-X stores the 12-bit hash of the full nonstandard CQ callsign
+        // in n12 even though the same callsign is also present in n58.
+        if (!save_callsign(hash_if, call58, NULL, &n12, NULL))
+            return FTX_MESSAGE_RC_ERROR_CALLSIGN2;
+        LOG(LOG_DEBUG, "CQ: 58-bit '%s'; n12=%u; omitting grid '%s'\n",
+            call58, (unsigned)n12, extra);
     }
 
     if (!pack58(hash_if, call58, &n58))
@@ -656,6 +674,15 @@ static void add_brackets(char* result, const char* original, int length)
     memcpy(result + 1, original, length);
     result[length + 1] = '>';
     result[length + 2] = '\0';
+}
+
+static bool callsign_token_length_ok(const char* token)
+{
+    size_t length = strlen(token);
+    if (length <= FTX_MAX_CALLSIGN_LENGTH)
+        return true;
+    return length >= 2 && token[0] == '<' && token[length - 1] == '>'
+        && (length - 2) <= FTX_MAX_CALLSIGN_LENGTH;
 }
 
 static bool save_callsign(const ftx_callsign_hash_interface_t* hash_if, const char* callsign, uint32_t* n22_out, uint16_t* n12_out, uint16_t* n10_out)
