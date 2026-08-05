@@ -841,11 +841,14 @@ void ft8_poll(int seconds, int tx_is_on){
 	//if we are already transmitting, we continue 
 	//until we run out of ft8 sampels
 	if (tx_is_on){
-		//tx_off should not abort repeats from modem_poll, when called from here
+		// tx_off() calls modem_abort() -> ft8_abort().  Preserve the pending
+		// repeat state when this is only the normal end of one FT8 slot.
 		int ft8_repeat_save = ft8_repeat;
+		bool ft8_tx_message_valid_save = ft8_tx_message_valid;
 		if (ft8_tx_nsamples == 0){
 			tx_off();
 			ft8_repeat = ft8_repeat_save;
+			ft8_tx_message_valid = (ft8_repeat_save > 0) && ft8_tx_message_valid_save;
 		}
 		return;
 	}
