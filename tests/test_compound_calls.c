@@ -78,7 +78,7 @@ static int check_boundary_cases(void)
 
     ftx_message_init(&message);
     if (ftx_message_encode_nonstd(&message, &hash_interface,
-            "SP5DAA", "XY/TE5THF/R", "AB09") != FTX_MESSAGE_RC_OK)
+            "SP5DAA", "XY/TE5THF/R", "") != FTX_MESSAGE_RC_OK)
     {
         fprintf(stderr, "FAIL: valid 11-character callsign was rejected\n");
         ++failures;
@@ -86,7 +86,7 @@ static int check_boundary_cases(void)
 
     ftx_message_init(&message);
     if (ftx_message_encode_nonstd(&message, &hash_interface,
-            "SP5DAA", "XY/TE5THF/RR", "AB09") == FTX_MESSAGE_RC_OK)
+            "SP5DAA", "XY/TE5THF/RR", "") == FTX_MESSAGE_RC_OK)
     {
         fprintf(stderr, "FAIL: 12-character callsign was silently accepted\n");
         ++failures;
@@ -94,7 +94,7 @@ static int check_boundary_cases(void)
 
     ftx_message_init(&message);
     if (ftx_message_encode_nonstd(&message, &hash_interface,
-            "SP5DAA", "<XY/TE5THF>", "AB09") != FTX_MESSAGE_RC_OK)
+            "SP5DAA", "<XY/TE5THF>", "") != FTX_MESSAGE_RC_OK)
     {
         fprintf(stderr, "FAIL: valid bracketed hashed callsign was rejected\n");
         ++failures;
@@ -102,7 +102,7 @@ static int check_boundary_cases(void)
 
     ftx_message_init(&message);
     if (ftx_message_encode_nonstd(&message, &hash_interface,
-            "SP5DAA", "<XY/TE5THF", "AB09") == FTX_MESSAGE_RC_OK)
+            "SP5DAA", "<XY/TE5THF", "") == FTX_MESSAGE_RC_OK)
     {
         fprintf(stderr, "FAIL: unterminated bracketed callsign was accepted\n");
         ++failures;

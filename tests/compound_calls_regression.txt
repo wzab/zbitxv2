@@ -2,7 +2,7 @@
 # Each non-comment line is a message that must encode without truncation.
 # Sequences below must retain both full callsigns in the QSO state/cache.
 
-CQ OE/SP5DAA JN66
+CQ OE/SP5DAA
 DL/SP5XYZ/P OE/SP5DAA JN66
 OE/SP5DAA DL/SP5XYZ/P -10
 DL/SP5XYZ/P OE/SP5DAA R-08
@@ -24,7 +24,7 @@ F/ON4ABC/P OE/SP5DAA/P 73
 
 # Interoperability cases observed with reference WSJT-X
 CQ OK/SP5DAA/P
-CQ XY/TE5THF AB09
+CQ XY/TE5THF
 SP5DAA XY/TE5THF AB09
 XY/TE5THF SP5DAA +33
 SP5DAA XY/TE5THF R+03

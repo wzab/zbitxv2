@@ -177,13 +177,18 @@ ftx_message_rc_t ftx_message_encode(ftx_message_t* msg, ftx_callsign_hash_interf
 
     ftx_message_rc_t rc;
     const size_t call_to_length = strlen(call_to);
-    const bool explicit_hashed_call_to = call_to_length >= 2
-        && call_to[0] == '<' && call_to[call_to_length - 1] == '>';
+    const size_t call_de_length = strlen(call_de);
+    const bool explicit_hashed_call =
+        (call_to_length >= 2 && call_to[0] == '<' && call_to[call_to_length - 1] == '>') ||
+        (call_de_length >= 2 && call_de[0] == '<' && call_de[call_de_length - 1] == '>');
+    const bool type4_extra = extra[0] == '\0' || equals(extra, "RRR") ||
+        equals(extra, "RR73") || equals(extra, "73");
     if (is_call_de) {
-        // An explicitly bracketed first call requests a type-4 message.  Trying
-        // the standard encoder first would encode both calls as hashes and is
-        // not interoperable with WSJT-X for a nonstandard-call reply.
-        if (explicit_hashed_call_to) {
+        // An explicitly bracketed call with a type-4-compatible suffix
+        // requests a type-4 message.  Numeric reports still belong to the
+        // standard message format, where a nonstandard call is carried as a
+        // 22-bit hash.
+        if (explicit_hashed_call && type4_extra) {
             rc = ftx_message_encode_nonstd(msg, hash_if, call_to, call_de, extra);
             if (rc == FTX_MESSAGE_RC_OK)
                 return rc;
@@ -326,6 +331,12 @@ ftx_message_rc_t ftx_message_encode_nonstd(ftx_message_t* msg, ftx_callsign_hash
     }
 
     if (icq != 0)
+    {
+        if (extra[0] != '\0')
+            return FTX_MESSAGE_RC_ERROR_GRID;
+        nrpt = 0;
+    }
+    else if (extra[0] == '\0')
         nrpt = 0;
     else if (equals(extra, "RRR"))
         nrpt = 1;
@@ -334,7 +345,7 @@ ftx_message_rc_t ftx_message_encode_nonstd(ftx_message_t* msg, ftx_callsign_hash
     else if (equals(extra, "73"))
         nrpt = 3;
     else
-        nrpt = 0;
+        return FTX_MESSAGE_RC_ERROR_GRID;
 
     // Pack into 12 + 58 + 1 + 2 + 1 + 3 == 77 bits
     // write(c77,1010) n12,n58,iflip,nrpt,icq,i3

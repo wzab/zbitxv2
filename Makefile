@@ -4,7 +4,7 @@ LDFLAGS = -lwiringPi -lasound -lm -lfftw3 -lfftw3f -pthread -lncurses -lsqlite3 
 
 TARGET  = sbitx
 
-SRCS = vfo.c si570.c sbitx_sound.c fft_filter.c sbitx_gtk.c sbitx_utils.c        i2cbb.c si5351v2.c ini.c hamlib.c queue.c modems.c logbook.c        modem_cw.c settings_ui.c oled.c hist_disp.c ntputil.c        telnet.c macros.c modem_ft8.c remote.c mongoose.c webserver.c $(TARGET).c
+SRCS = vfo.c si570.c sbitx_sound.c fft_filter.c sbitx_gtk.c sbitx_utils.c        i2cbb.c si5351v2.c ini.c hamlib.c queue.c modems.c logbook.c        modem_cw.c settings_ui.c oled.c hist_disp.c ntputil.c        telnet.c macros.c modem_ft8.c ft8_tx_message.c remote.c mongoose.c webserver.c $(TARGET).c
 
 OBJS    = $(SRCS:.c=.o)
 FT8_LIB = ft8_lib/libft8.a

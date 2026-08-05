@@ -14,6 +14,7 @@
 #include "sdr.h"
 #include "sdr_ui.h"
 #include "modem_ft8.h"
+#include "ft8_tx_message.h"
 #include "logbook.h"
 
 #include "ft8_lib/common/common.h"
@@ -38,6 +39,8 @@ static pthread_cond_t ft8_rx_cond = PTHREAD_COND_INITIALIZER;
 
 static float ft8_tx_buff[FT8_MAX_BUFF];
 static char ft8_tx_text[128];
+static ftx_message_t ft8_tx_message;
+static bool ft8_tx_message_valid = false;
 static int ft8_tx_buff_index = 0;
 static int	ft8_tx_nsamples = 0;
 static int	ft8_do_tx = 0;
@@ -282,11 +285,42 @@ static void synth_gfsk(const uint8_t* symbols, int n_sym, float f0, float symbol
 }
 
 
-int sbitx_ft8_encode(char *message, int32_t freq,  float *signal, bool is_ft4)
+static int sbitx_ft8_synthesize(const ftx_message_t* packed, int32_t freq,
+    float* signal, bool is_ft4)
 {
-    float frequency = 1.0 * freq;
+    if (packed == NULL || signal == NULL)
+        return -1;
 
-    // First, pack the text data into a 77-bit FTx payload.
+    float frequency = 1.0f * freq;
+    int num_tones = is_ft4 ? FT4_NN : FT8_NN;
+    float symbol_period = is_ft4 ? FT4_SYMBOL_PERIOD : FT8_SYMBOL_PERIOD;
+    float symbol_bt = is_ft4 ? FT4_SYMBOL_BT : FT8_SYMBOL_BT;
+    float slot_time = is_ft4 ? FT4_SLOT_TIME : FT8_SLOT_TIME;
+
+    uint8_t tones[num_tones];
+    if (is_ft4)
+        ft4_encode(packed->payload, tones);
+    else
+        ft8_encode(packed->payload, tones);
+
+    int sample_rate = 12000;
+    int num_samples = (int)(0.5f + num_tones * symbol_period * sample_rate);
+    int num_silence = (slot_time * sample_rate - num_samples) / 2;
+    int num_total_samples = num_silence + num_samples + num_silence;
+
+    for (int i = 0; i < num_silence; ++i)
+    {
+        signal[i] = 0;
+        signal[i + num_samples + num_silence] = 0;
+    }
+
+    synth_gfsk(tones, num_tones, frequency, symbol_bt, symbol_period,
+        sample_rate, signal + num_silence);
+    return num_total_samples;
+}
+
+int sbitx_ft8_encode(char* message, int32_t freq, float* signal, bool is_ft4)
+{
     ftx_message_t packed;
     ftx_message_init(&packed);
     ftx_message_rc_t rc = ftx_message_encode(&packed, &ft8_hash_if, message);
@@ -297,32 +331,7 @@ int sbitx_ft8_encode(char *message, int32_t freq,  float *signal, bool is_ft4)
         return -1;
     }
 
-    int num_tones = (is_ft4) ? FT4_NN : FT8_NN;
-    float symbol_period = (is_ft4) ? FT4_SYMBOL_PERIOD : FT8_SYMBOL_PERIOD;
-    float symbol_bt = (is_ft4) ? FT4_SYMBOL_BT : FT8_SYMBOL_BT;
-    float slot_time = (is_ft4) ? FT4_SLOT_TIME : FT8_SLOT_TIME;
-
-    // Second, encode the binary message as a sequence of FSK tones
-    uint8_t tones[num_tones]; // Array of 79 tones (symbols)
-    if (is_ft4)
-        ft4_encode(packed.payload, tones);
-    else
-        ft8_encode(packed.payload, tones);
-
-    // Third, convert the FSK tones into an audio signal
-    int sample_rate = 12000;
-    int num_samples = (int)(0.5f + num_tones * symbol_period * sample_rate); // samples in the data signal
-    int num_silence = (slot_time * sample_rate - num_samples) / 2;           // Silence  to make 15 seconds
-    int num_total_samples = num_silence + num_samples + num_silence;         // total Number samples 
-
-    for (int i = 0; i < num_silence; i++) {
-        signal[i] = 0;
-        signal[i + num_samples + num_silence] = 0;
-    }
-
-    // Synthesize waveform data (signal) and save it as WAV file
-    synth_gfsk(tones, num_tones, frequency, symbol_bt, symbol_period, sample_rate, signal + num_silence);
-    return num_total_samples;
+    return sbitx_ft8_synthesize(&packed, freq, signal, is_ft4);
 }
 
 static float hann_i(int i, int N)
@@ -676,67 +685,78 @@ void ft8_setmode(int config){
 	}
 }
 
-static void ft8_start_tx(int offset_seconds){
-	char buff[1000];
-	//timestamp the packets for display log
-	time_t	rawtime = time_sbitx();
-	struct tm *t = gmtime(&rawtime);
+static bool ft8_start_tx(int offset_seconds)
+{
+	if (!ft8_tx_message_valid)
+		return false;
 
-  sprintf(buff, "%02d%02d%02d  TX +00 %04d ~  %s\n", t->tm_hour, t->tm_min, t->tm_sec, ft8_pitch, ft8_tx_text);
+	ft8_tx_nsamples = sbitx_ft8_synthesize(&ft8_tx_message, ft8_pitch,
+		ft8_tx_buff, false);
+	if (ft8_tx_nsamples <= 0)
+	{
+		ft8_tx_nsamples = 0;
+		ft8_tx_message_valid = false;
+		ft8_repeat = 0;
+		write_console(FONT_LOG, "FT8: failed to generate transmit audio\n");
+		return false;
+	}
+
+	char buff[1000];
+	time_t rawtime = time_sbitx();
+	struct tm* t = gmtime(&rawtime);
+	snprintf(buff, sizeof(buff), "%02d%02d%02d  TX +00 %04d ~  %s\n",
+		t->tm_hour, t->tm_min, t->tm_sec, ft8_pitch, ft8_tx_text);
 	write_console(FONT_FT8_TX, buff);
 	message_add("FT8", ft8_pitch, 1, ft8_tx_text);
 
-	ft8_tx_nsamples = sbitx_ft8_encode(ft8_tx_text, ft8_pitch, ft8_tx_buff, false); 
 	ft8_tx_buff_index = offset_seconds * 96000;
+	return true;
 }
 
-// the ft8_tx() only schedules the transmission
-// it is picked up by ft8_poll to do the actuall transmission
-void ft8_tx(char *message, int freq){
-	char cmd[200], buff[1000];
-	FILE	*pf;
-	time_t	rawtime = time_sbitx();
-	struct tm *t = gmtime(&rawtime);
+// Encode and schedule a transmission.  Programmatic and macro-generated
+// messages are validated before the repeat counter or transmitter is armed.
+void ft8_tx(char* message, int freq)
+{
+	char buff[1000];
+	char str_tx1st[10];
+	char str_repeat[10];
 
-	for (int i = 0; i < strlen(message); i++)
-		message[i] = toupper(message[i]);
-	strcpy(ft8_tx_text, message);
+	ft8_repeat = 0;
+	ft8_tx_nsamples = 0;
+	ft8_tx_message_valid = false;
+
+	ftx_message_rc_t rc = ft8_prepare_tx_message(&ft8_tx_message, &ft8_hash_if,
+		message, ft8_tx_text, sizeof(ft8_tx_text));
+	if (rc != FTX_MESSAGE_RC_OK)
+	{
+		snprintf(buff, sizeof(buff), "FT8: cannot encode message (RC=%d): %s\n",
+			(int)rc, message != NULL ? message : "");
+		write_console(FONT_LOG, buff);
+		fprintf(stderr, "%s", buff);
+		return;
+	}
+	ft8_tx_message_valid = true;
 
 	ft8_pitch = freq;
-  sprintf(buff, "%02d%02d%02d  TX +00 %04d ~  %s\n", t->tm_hour, t->tm_min, t->tm_sec, ft8_pitch, ft8_tx_text);
+	time_t rawtime = time_sbitx();
+	struct tm* t = gmtime(&rawtime);
+	snprintf(buff, sizeof(buff), "%02d%02d%02d  TX +00 %04d ~  %s\n",
+		t->tm_hour, t->tm_min, t->tm_sec, ft8_pitch, ft8_tx_text);
 	write_console(FONT_FT8_QUEUED, buff);
 
-	//also set the times of transmission
-	char str_tx1st[10], str_repeat[10];
 	get_field_value_by_label("FT8_TX1ST", str_tx1st);
 	get_field_value_by_label("FT8_REPEAT", str_repeat);
-	int slot_second = time_sbitx() % 15;
 
-	//the FT8_TX1ST setting is only to initiate a CQ call
-	//if we are not transmitting CQ, then we follow
-	//the slot selected earlier in ft8_process()
+	// FT8_TX1ST applies only when initiating CQ.  Other messages use the
+	// slot selected while processing the received message.
+	if (!strncmp(ft8_tx_text, "CQ ", 3))
+		ft8_tx1st = !strcmp(str_tx1st, "ON");
 
-	if (!strncmp(message, "CQ", 2)){ 
-		if(!strcmp(str_tx1st, "ON"))
-			ft8_tx1st = 1;
-		else
-			ft8_tx1st = 0;
-	}
-
-	//no repeat for '73'
-	int msg_length = strlen(message);
-	if (msg_length > 3 && !strcmp(message + msg_length - 3, " 73")){
+	size_t msg_length = strlen(ft8_tx_text);
+	if (msg_length > 3 && !strcmp(ft8_tx_text + msg_length - 3, " 73"))
 		ft8_repeat = 1;
-	} 
 	else
 		ft8_repeat = atoi(str_repeat);
-
-	// if it is a CQ message, then wait for the slot
-	if (!strncmp(ft8_tx_text, "CQ ", 3))
-		return;
-
-	//figure out how many samples can be transmitted in this current slot
-	int index = (slot_second % 15) * 96000;
 }
 
 void *ft8_thread_function(void *ptr){
@@ -840,12 +860,20 @@ void ft8_poll(int seconds, int tx_is_on){
 	if (
 		(ft8_tx1st == 1 && ((seconds >= 0  && seconds < 15) ||
 			(seconds >=30 && seconds < 45))) ||
-		(ft8_tx1st == 0 && ((seconds >= 15 && seconds < 30)|| 
+		(ft8_tx1st == 0 && ((seconds >= 15 && seconds < 30)||
 			(seconds >= 45 && seconds < 59)))){
-		tx_on(TX_SOFT);
-		ft8_start_tx(seconds % 15);
-		ft8_repeat--;
-	} 
+		if (ft8_start_tx(seconds % 15))
+		{
+			tx_on(TX_SOFT);
+			ft8_repeat--;
+		}
+		else
+		{
+			// Do not burn the repeat counter or retry a message that could not
+			// be prepared for transmission.
+			ft8_repeat = 0;
+		}
+	}
 }
 
 float ft8_next_sample(){
@@ -881,36 +909,6 @@ static void ft8_unwrap_hashed_callsign(char *callsign)
 		memmove(callsign, callsign + 1, length - 2);
 		callsign[length - 2] = '\0';
 	}
-}
-
-static bool ft8_callsign_requires_type4(const char *callsign)
-{
-	char probe_text[FTX_MAX_MESSAGE_LENGTH];
-	ftx_message_t probe;
-	int length = snprintf(probe_text, sizeof(probe_text), "CQ %s", callsign);
-	if (length < 0 || (size_t)length >= sizeof(probe_text))
-		return false;
-	ftx_message_init(&probe);
-	if (ftx_message_encode(&probe, NULL, probe_text) != FTX_MESSAGE_RC_OK)
-		return false;
-	return ftx_message_get_type(&probe) == FTX_MESSAGE_TYPE_NONSTD_CALL;
-}
-
-static int ft8_format_initial_reply(char *destination, size_t destination_size,
-	const char *dx_call, const char *own_call, const char *grid)
-{
-	int length;
-	if (ft8_callsign_requires_type4(dx_call) || ft8_callsign_requires_type4(own_call))
-	{
-		// WSJT-X type-4 initial reply: hash the called station, transmit the
-		// other callsign in full, and omit the grid (type 4 cannot carry it).
-		length = snprintf(destination, destination_size, "<%s> %s", dx_call, own_call);
-	}
-	else
-	{
-		length = snprintf(destination, destination_size, "%s %s %s", dx_call, own_call, grid);
-	}
-	return (length >= 0 && (size_t)length < destination_size) ? 0 : -1;
 }
 
 int ft8_message_tokenize(char *message){
@@ -989,7 +987,7 @@ void ft8_on_start_qso(char *message){
 
     if (!strcmp(m2, mycall)){ // own transmission clicked - restart qso
 		field_set("CALL", m1);
-		call = m1;
+		call = field_str("CALL");
 		if (ft8_format_initial_reply(reply_message, sizeof(reply_message), call, mycall, mygrid) < 0)
 			return;
 	}
@@ -1004,6 +1002,7 @@ void ft8_on_start_qso(char *message){
 			field_set("EXCH", m3);
 			field_set("SENT", signal_strength);
 		}
+		call = field_str("CALL");
 		if (ft8_format_initial_reply(reply_message, sizeof(reply_message), call, mycall, mygrid) < 0)
 			return;
 	}
@@ -1012,6 +1011,7 @@ void ft8_on_start_qso(char *message){
 		char cur_call[20];
 	    get_field_value_by_label("CALL", cur_call);
 		field_set("CALL", m2);
+		call = field_str("CALL");
 		field_set("SENT", signal_strength);
 		//they might have directly sent us a signal report
 		if (isalpha(m3[0]) && isalpha(m3[1]) && strncmp(m3,"RR",2)!=0){ // R- RR are not EXCH
@@ -1028,6 +1028,7 @@ void ft8_on_start_qso(char *message){
 	}
 	else { //we are breaking into someone else's qso
 		field_set("CALL", m2);
+		call = field_str("CALL");
 		if (isalpha(m3[0]) && isalpha(m3[1]) && strncmp(m3,"RR",2)!=0){ // R- RR are not EXCH
 			field_set("EXCH", m3); // the gridId is valid - use it
 		} else {
@@ -1142,10 +1143,13 @@ void ft8_init(){
     wallclock = 0;
     ft8_tx_buff_index = 0;
     ft8_tx_nsamples = 0;
+    ft8_tx_message_valid = false;
+    ftx_message_init(&ft8_tx_message);
     pthread_create(&ft8_thread, NULL, ft8_thread_function, NULL);
 }
 
 void ft8_abort(){
 	ft8_tx_nsamples = 0;
 	ft8_repeat = 0;
+	ft8_tx_message_valid = false;
 }
