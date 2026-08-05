@@ -351,8 +351,147 @@ static int test_audio_decode(const reference_vector_t *vector)
     return (int)failures;
 }
 
-int main(void)
+static void print_payload(const ftx_message_t *message)
 {
+    for (int i = 0; i < FTX_PAYLOAD_LENGTH_BYTES; ++i)
+        printf("%02X", message->payload[i]);
+}
+
+static int decode_f32_file(const char *path)
+{
+    FILE *input = fopen(path, "rb");
+    if (input == NULL) {
+        perror(path);
+        return 1;
+    }
+    if (fseek(input, 0, SEEK_END) != 0) {
+        perror("fseek");
+        fclose(input);
+        return 1;
+    }
+    long byte_count = ftell(input);
+    if (byte_count <= 0 || byte_count % (long)sizeof(float) != 0) {
+        fprintf(stderr, "Invalid float32 file size for %s: %ld bytes\n", path, byte_count);
+        fclose(input);
+        return 1;
+    }
+    rewind(input);
+
+    size_t sample_count = (size_t)byte_count / sizeof(float);
+    float *audio = malloc(sample_count * sizeof(*audio));
+    if (audio == NULL) {
+        fprintf(stderr, "Cannot allocate %zu samples\n", sample_count);
+        fclose(input);
+        return 1;
+    }
+    if (fread(audio, sizeof(*audio), sample_count, input) != sample_count) {
+        fprintf(stderr, "Short read from %s\n", path);
+        free(audio);
+        fclose(input);
+        return 1;
+    }
+    fclose(input);
+
+    double sum = 0.0;
+    double sum_squares = 0.0;
+    float peak = 0.0f;
+    for (size_t i = 0; i < sample_count; ++i) {
+        float value = audio[i];
+        float absolute = fabsf(value);
+        if (absolute > peak)
+            peak = absolute;
+        sum += value;
+        sum_squares += (double)value * value;
+    }
+    double dc = sum / sample_count;
+    double rms = sqrt(sum_squares / sample_count);
+
+    zbitx_monitor_t monitor;
+    if (!zbitx_monitor_init(&monitor, 0.0f)) {
+        fprintf(stderr, "Cannot initialize monitor\n");
+        free(audio);
+        return 1;
+    }
+    for (size_t pos = 0; pos + (size_t)monitor.block_size <= sample_count;
+         pos += (size_t)monitor.block_size)
+        zbitx_monitor_process(&monitor, audio + pos);
+
+    ftx_candidate_t candidates[MAX_CANDIDATES];
+    int candidate_count = ftx_find_candidates(&monitor.wf, MAX_CANDIDATES, candidates, MIN_SCORE);
+    int channel_ok = 0;
+    int unpack_failures = 0;
+    int decoded_count = 0;
+    ftx_message_t decoded[64];
+    int decoded_unique = 0;
+
+    printf("F32 input: %s samples=%zu duration=%.3fs peak=%.6f rms=%.6f dc=%+.6f blocks=%d candidates=%d max=%.1fdB\n",
+        path, sample_count, (double)sample_count / SAMPLE_RATE, peak, rms, dc,
+        monitor.wf.num_blocks, candidate_count, monitor.max_mag);
+
+    for (int i = 0; i < candidate_count; ++i) {
+        ftx_message_t message;
+        ftx_decode_status_t status;
+        if (!ftx_decode_candidate(&monitor.wf, &candidates[i], LDPC_ITERATIONS,
+                &message, &status))
+            continue;
+        ++channel_ok;
+
+        bool duplicate = false;
+        for (int j = 0; j < decoded_unique; ++j) {
+            if (memcmp(decoded[j].payload, message.payload, sizeof(message.payload)) == 0) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate)
+            continue;
+        if (decoded_unique < (int)(sizeof(decoded) / sizeof(decoded[0])))
+            decoded[decoded_unique++] = message;
+
+        char text[FTX_MAX_MESSAGE_LENGTH];
+        ftx_message_offsets_t offsets;
+        ftx_message_rc_t rc = ftx_message_decode(&message, NULL, text, &offsets);
+        if (rc != FTX_MESSAGE_RC_OK) {
+            ++unpack_failures;
+            printf("F32 unpack failure: score=%d snr=%d rc=%d type=%d payload=",
+                candidates[i].score, candidates[i].snr, (int)rc,
+                (int)ftx_message_get_type(&message));
+            print_payload(&message);
+            putchar('\n');
+            continue;
+        }
+
+        float frequency = (candidates[i].freq_offset
+            + (float)candidates[i].freq_sub / monitor.wf.freq_osr) / FT8_SYMBOL_PERIOD;
+        float time_offset = (candidates[i].time_offset
+            + (float)candidates[i].time_sub / monitor.wf.time_osr) * FT8_SYMBOL_PERIOD;
+        printf("F32 decoded: score=%d snr=%d time=%+.3fs freq=%.1fHz type=%d i3=%u n3=%u payload=",
+            candidates[i].score, candidates[i].snr, time_offset, frequency,
+            (int)ftx_message_get_type(&message),
+            (unsigned)ftx_message_get_i3(&message),
+            (unsigned)ftx_message_get_n3(&message));
+        print_payload(&message);
+        printf(" text='%s'\n", text);
+        ++decoded_count;
+    }
+
+    printf("F32 summary: candidates=%d channel_ok=%d unpack_fail=%d decoded=%d\n",
+        candidate_count, channel_ok, unpack_failures, decoded_count);
+
+    zbitx_monitor_free(&monitor);
+    free(audio);
+    return decoded_count > 0 ? 0 : 1;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1) {
+        unsigned failures = 0;
+        for (int i = 1; i < argc; ++i)
+            failures += (unsigned)decode_f32_file(argv[i]);
+        return failures ? 1 : 0;
+    }
+
     unsigned failures = 0;
     for (size_t i = 0; i < sizeof(reference_vectors) / sizeof(reference_vectors[0]); ++i) {
         failures += (unsigned)test_payload_decode(&reference_vectors[i]);

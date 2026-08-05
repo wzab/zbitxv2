@@ -26,4 +26,4 @@ $cc -D_GNU_SOURCE -I../ft8_lib $cflags $extra_flags -Wall -Wextra -std=c11 \
     ../ft8_lib/fft/kiss_fftr.c \
     -lm
 
-"$binary"
+"$binary" "$@"

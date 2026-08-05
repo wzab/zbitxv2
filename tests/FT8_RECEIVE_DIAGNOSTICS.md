@@ -34,3 +34,28 @@ Interpretation:
 - payload passes but audio fails: candidate search, FFT, LDPC or CRC path;
 - all tests pass but radio reception fails: inspect the captured zBitx audio,
   slot timing, input level/AGC and application transport/display path.
+
+## Live receiver snapshots
+
+Build and run zBitx with diagnostics enabled:
+
+```sh
+SBITX_FT8_DIAG=1 SBITX_FT8_DUMP=1 ./sbitx 2>&1 | tee /tmp/sbitx-ft8-live.log
+```
+
+Each completed receive slot is saved as `/tmp/sbitx-ft8-*.f32`.  Copy a
+snapshot to a development machine and run the same decoder used by the
+reference-vector test:
+
+```sh
+./tests/run_ft8_receive_diagnostics.sh /path/to/sbitx-ft8-slot.f32
+```
+
+Interpretation:
+
+- live and offline decoding both fail: inspect input level, timing and the
+  existing 96 kHz to 12 kHz decimator;
+- offline decoding succeeds while the live log does not: investigate live
+  buffering or application state;
+- the live log reports a decoded message but the GUI does not show it: the
+  fault is downstream of the decoder, in message handling or transport.
