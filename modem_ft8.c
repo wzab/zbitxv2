@@ -26,21 +26,15 @@
 #include "ft8_lib/ft8/constants.h"
 #include "ft8_lib/fft/kiss_fftr.h"
 
-static int32_t ft8_rx_buff[FT8_MAX_BUFF];
 #define FT8_RX_BUFFER_COUNT 2
 static float ft8_rx_buffers[FT8_RX_BUFFER_COUNT][FT8_MAX_BUFF];
 static int ft8_rx_active_buffer = 0;
 static int ft8_rx_active_count = 0;
 static int ft8_rx_pending_buffer = -1;
 static int ft8_rx_pending_count = 0;
-static time_t ft8_rx_pending_slot = 0;
 static bool ft8_rx_buffer_busy[FT8_RX_BUFFER_COUNT];
 static pthread_mutex_t ft8_rx_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ft8_rx_cond = PTHREAD_COND_INITIALIZER;
-static unsigned int ft8_rx_dropped_slots = 0;
-static bool ft8_live_diag_enabled = false;
-static bool ft8_live_dump_enabled = false;
-static unsigned int ft8_live_dump_sequence = 0;
 
 static float ft8_tx_buff[FT8_MAX_BUFF];
 static char ft8_tx_text[128];
@@ -198,80 +192,6 @@ static void ft8_callsign_cache_next_generation(void)
 }
 
 
-static bool ft8_env_flag(const char* name)
-{
-    const char* value = getenv(name);
-    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
-}
-
-static void ft8_dump_snapshot(const float* samples, int num_samples, time_t slot_time)
-{
-    if (!ft8_live_dump_enabled || samples == NULL || num_samples <= 0)
-        return;
-
-    struct tm timestamp;
-    char date[32];
-    if (gmtime_r(&slot_time, &timestamp) == NULL ||
-        strftime(date, sizeof(date), "%Y%m%d-%H%M%S", &timestamp) == 0)
-        snprintf(date, sizeof(date), "%lld", (long long)slot_time);
-
-    char path[256];
-    snprintf(path, sizeof(path), "/tmp/sbitx-ft8-%s-%03u.f32",
-        date, ft8_live_dump_sequence++);
-
-    FILE* output = fopen(path, "wb");
-    if (output == NULL)
-    {
-        fprintf(stderr, "FT8 LIVE dump: cannot open %s\n", path);
-        return;
-    }
-
-    size_t written = fwrite(samples, sizeof(samples[0]), (size_t)num_samples, output);
-    int close_rc = fclose(output);
-    if (written != (size_t)num_samples || close_rc != 0)
-    {
-        fprintf(stderr, "FT8 LIVE dump: incomplete write to %s (%zu/%d samples)\n",
-            path, written, num_samples);
-        return;
-    }
-
-    fprintf(stderr, "FT8 LIVE dump: %s (%d samples)\n", path, num_samples);
-}
-
-static void ft8_log_snapshot_stats(const float* samples, int num_samples, time_t slot_time)
-{
-    if (!ft8_live_diag_enabled || samples == NULL || num_samples <= 0)
-        return;
-
-    double sum = 0.0;
-    double sum_squares = 0.0;
-    float peak = 0.0f;
-    for (int i = 0; i < num_samples; ++i)
-    {
-        float value = samples[i];
-        float absolute = fabsf(value);
-        if (absolute > peak)
-            peak = absolute;
-        sum += value;
-        sum_squares += (double)value * value;
-    }
-
-    double dc = sum / num_samples;
-    double rms = sqrt(sum_squares / num_samples);
-    pthread_mutex_lock(&ft8_rx_mutex);
-    unsigned int dropped_slots = ft8_rx_dropped_slots;
-    pthread_mutex_unlock(&ft8_rx_mutex);
-    fprintf(stderr,
-        "FT8 LIVE snapshot: slot=%lld samples=%d duration=%.3fs peak=%.6f rms=%.6f dc=%+.6f dropped=%u\n",
-        (long long)slot_time, num_samples, (double)num_samples / 12000.0,
-        peak, rms, dc, dropped_slots);
-}
-
-static void ft8_print_payload(const ftx_message_t* message)
-{
-    for (int i = 0; i < FTX_PAYLOAD_LENGTH_BYTES; ++i)
-        fprintf(stderr, "%02X", message->payload[i]);
-}
 
 #define FT8_SYMBOL_BT 2.0f ///< symbol smoothing filter bandwidth factor (BT)
 #define FT4_SYMBOL_BT 1.0f ///< symbol smoothing filter bandwidth factor (BT)
@@ -640,9 +560,6 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
     // Find top candidates by Costas sync score and localize them in time and frequency
     ftx_candidate_t candidate_list[kMax_candidates];
     int num_candidates = ftx_find_candidates(&mon.wf, kMax_candidates, candidate_list, kMin_score);
-    int channel_ok = 0;
-    int unpack_failures = 0;
-    int duplicate_payloads = 0;
 
     // Hash table for decoded messages (to check for duplicates)
     int num_decoded = 0;
@@ -676,8 +593,6 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
                 LOG(LOG_DEBUG, "CRC mismatch!\n");
             continue;
         }
-        ++channel_ok;
-
         LOG(LOG_DEBUG, "Checking hash table for %4.1fs / %4.1fHz [%d]...\n", time_sec, freq_hz, cand->score);
         int idx_hash = message.hash % kMax_decoded_messages;
         bool found_empty_slot = false;
@@ -691,7 +606,6 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
                      (0 == memcmp(decoded_hashtable[idx_hash]->payload, message.payload, sizeof(message.payload)))) {
                 LOG(LOG_DEBUG, "Found a duplicate payload\n");
                 found_duplicate = true;
-                ++duplicate_payloads;
             }
             else {
                 LOG(LOG_DEBUG, "Hash table clash!\n");
@@ -711,30 +625,8 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
                     ftx_message_rc_t unpack_rc = ftx_message_decode(&message, &ft8_hash_if, decoded_text, &offsets);
                     if (unpack_rc != FTX_MESSAGE_RC_OK)
                     {
-                        ++unpack_failures;
-                        if (ft8_live_diag_enabled)
-                        {
-                            fprintf(stderr, "FT8 LIVE unpack failure: rc=%d type=%d i3=%u n3=%u payload=",
-                                (int)unpack_rc, (int)ftx_message_get_type(&message),
-                                (unsigned)ftx_message_get_i3(&message),
-                                (unsigned)ftx_message_get_n3(&message));
-                            ft8_print_payload(&message);
-                            fputc('\n', stderr);
-                        }
                         LOG(LOG_DEBUG, "Error %d while unpacking FT8 payload\n", (int)unpack_rc);
                         continue;
-                    }
-
-                    if (ft8_live_diag_enabled)
-                    {
-                        fprintf(stderr,
-                            "FT8 LIVE decoded: score=%d snr=%d time=%+.3fs freq=%.1fHz type=%d i3=%u n3=%u payload=",
-                            cand->score, cand->snr, time_sec, freq_hz,
-                            (int)ftx_message_get_type(&message),
-                            (unsigned)ftx_message_get_i3(&message),
-                            (unsigned)ftx_message_get_n3(&message));
-                        ft8_print_payload(&message);
-                        fprintf(stderr, " text='%s'\n", decoded_text);
                     }
 
                     char buff[1000];
@@ -754,13 +646,6 @@ static int sbitx_ft8_decode(float *signal, int num_samples, bool is_ft8)
       }
     }
     //LOG(LOG_INFO, "Decoded %d messages\n", num_decoded);
-    if (ft8_live_diag_enabled)
-    {
-        fprintf(stderr,
-            "FT8 LIVE summary: samples=%d blocks=%d max=%.1fdB candidates=%d channel_ok=%d unpack_fail=%d duplicates=%d decoded=%d\n",
-            num_samples, mon.wf.num_blocks, mon.max_mag, num_candidates,
-            channel_ok, unpack_failures, duplicate_payloads, n_decodes);
-    }
 
     monitor_free(&mon);
     ft8_callsign_cache_next_generation();
@@ -864,15 +749,11 @@ void *ft8_thread_function(void *ptr){
 
         int buffer_index = ft8_rx_pending_buffer;
         int sample_count = ft8_rx_pending_count;
-        time_t slot_time = ft8_rx_pending_slot;
         ft8_rx_pending_buffer = -1;
         ft8_rx_pending_count = 0;
         pthread_mutex_unlock(&ft8_rx_mutex);
 
-        float* snapshot = ft8_rx_buffers[buffer_index];
-        ft8_log_snapshot_stats(snapshot, sample_count, slot_time);
-        ft8_dump_snapshot(snapshot, sample_count, slot_time);
-        sbitx_ft8_decode(snapshot, sample_count, true);
+        sbitx_ft8_decode(ft8_rx_buffers[buffer_index], sample_count, true);
 
         pthread_mutex_lock(&ft8_rx_mutex);
         ft8_rx_buffer_busy[buffer_index] = false;
@@ -880,7 +761,7 @@ void *ft8_thread_function(void *ptr){
     }
 }
 
-static void ft8_queue_decode_snapshot(time_t slot_time)
+static void ft8_queue_decode_snapshot(void)
 {
     int completed_buffer = ft8_rx_active_buffer;
     int next_buffer = (completed_buffer + 1) % FT8_RX_BUFFER_COUNT;
@@ -888,14 +769,6 @@ static void ft8_queue_decode_snapshot(time_t slot_time)
     pthread_mutex_lock(&ft8_rx_mutex);
     if (ft8_rx_pending_buffer >= 0 || ft8_rx_buffer_busy[next_buffer])
     {
-        ++ft8_rx_dropped_slots;
-        if (ft8_live_diag_enabled)
-        {
-            fprintf(stderr,
-                "FT8 LIVE dropped slot: pending=%d next_busy=%d active_samples=%d dropped=%u\n",
-                ft8_rx_pending_buffer, ft8_rx_buffer_busy[next_buffer] ? 1 : 0,
-                ft8_rx_active_count, ft8_rx_dropped_slots);
-        }
         pthread_mutex_unlock(&ft8_rx_mutex);
         return;
     }
@@ -903,8 +776,6 @@ static void ft8_queue_decode_snapshot(time_t slot_time)
     ft8_rx_buffer_busy[completed_buffer] = true;
     ft8_rx_pending_buffer = completed_buffer;
     ft8_rx_pending_count = ft8_rx_active_count;
-    ft8_rx_pending_slot = slot_time;
-
     ft8_rx_active_buffer = next_buffer;
     ft8_rx_active_count = 0;
 
@@ -931,12 +802,7 @@ void ft8_rx(int32_t *samples, int count){
 
     int samples_to_store = (count + decimation_ratio - 1) / decimation_ratio;
     if (ft8_rx_active_count + samples_to_store > FT8_MAX_BUFF)
-    {
-        if (ft8_live_diag_enabled)
-            fprintf(stderr, "FT8 LIVE active buffer overflow: count=%d incoming=%d\n",
-                ft8_rx_active_count, samples_to_store);
         ft8_rx_active_count = 0;
-    }
 
     // Down-convert to 12000 Hz sampling rate.  This preserves the existing
     // decimator so that the buffering change can be evaluated independently.
@@ -946,7 +812,7 @@ void ft8_rx(int32_t *samples, int count){
 
     // Queue one immutable snapshot near the end of each 15-second slot.
     if (new_second && slot_second == 14 && ft8_rx_active_count >= 13 * 12000)
-        ft8_queue_decode_snapshot((time_t)(now / 15) * 15);
+        ft8_queue_decode_snapshot();
 }
 
 void ft8_poll(int seconds, int tx_is_on){
@@ -1270,14 +1136,10 @@ void ft8_init(){
     ft8_rx_active_count = 0;
     ft8_rx_pending_buffer = -1;
     ft8_rx_pending_count = 0;
-    ft8_rx_pending_slot = 0;
     memset(ft8_rx_buffer_busy, 0, sizeof(ft8_rx_buffer_busy));
-    ft8_rx_dropped_slots = 0;
     pthread_mutex_unlock(&ft8_rx_mutex);
 
     wallclock = 0;
-    ft8_live_diag_enabled = ft8_env_flag("SBITX_FT8_DIAG");
-    ft8_live_dump_enabled = ft8_env_flag("SBITX_FT8_DUMP");
     ft8_tx_buff_index = 0;
     ft8_tx_nsamples = 0;
     pthread_create(&ft8_thread, NULL, ft8_thread_function, NULL);

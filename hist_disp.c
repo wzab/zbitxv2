@@ -25,6 +25,7 @@ bool isValidGridId(char* gridId) {
 static FILE* onfFout;
 
 void addGridToFile(char * gridId, int cnt) {
+	(void)cnt;
     if (isValidGridId(gridId)) {
 		if (onfFout != NULL) {
 				fwrite(gridId,1,4,onfFout);
@@ -49,11 +50,13 @@ struct hd_message_struct {
 
 int hd_next_token(char* src, int start, char* tok, int tok_max, char * sep) {
 	tok[0] = 0;
-	if (src == NULL || src[start] == 0) 
+	if (src == NULL || start < 0)
 		return -1;
 	char * p_sep;
 	int n, p;
 	int len = strlen(src);
+	if (start >= len)
+		return -1;
 	if (len > 0 && src[len-1] == '\n') {
 		len--; // strip trailing newline
 	}
@@ -66,21 +69,28 @@ int hd_next_token(char* src, int start, char* tok, int tok_max, char * sep) {
 		p = start;
 		start = start + n + strlen(sep);
 	} while (n == 0 && start < len);
-	if (n > tok_max) return -2;
+	if (n >= tok_max) return -2;
 	memcpy(tok, src + p, n);
 	tok[n] = 0;
 	return p + n + strlen(sep);
 }
 
 int hd_message_parse(struct hd_message_struct* p_message, char* raw_message) {
+	memset(p_message, 0, sizeof(*p_message));
+
 	int r = hd_next_token(raw_message, 0, p_message->signal_info, 32, "~ ");
 	if (r < 0 ) return r;
 	r = hd_next_token(raw_message, r, p_message->m1, 32, " ");
 	if (r < 0) return r;
 	r = hd_next_token(raw_message, r, p_message->m2, 32, " ");
 	if (r < 0) return r;
+
+	// Type-4 FT8 messages such as "CQ OK/SP5DAA" and
+	// "<SP5DAA> DL/RT3REW" contain only two message fields.
 	r = hd_next_token(raw_message, r, p_message->m3, 32, " ");
+	if (r == -1) return 0;
 	if (r < 0) return r;
+
 	r = hd_next_token(raw_message, r, p_message->m4, 32, " ");
 	if (r < -1) return r;
 	return 0;
@@ -116,7 +126,7 @@ char *ff_cs(char * markup, int style) {
 	return markup;
 }
 
-char* ff_style(char* decorated, struct hd_message_struct *pms, int style_default, int style1, int style2, int style3, int style4) {
+void ff_style(char* decorated, struct hd_message_struct *pms, int style_default, int style1, int style2, int style3, int style4) {
 	char markup[3];
 	*decorated = 0;
 	
@@ -167,41 +177,43 @@ void hd_strip_decoration(char * ft8_message, char * decorated) {
 }
 
 int hd_decorate(int style, char * message, char * decorated) {
-	
 	switch (style) {
 	case FONT_FT8_RX:
 	case FONT_FT8_TX:
 	case FONT_FT8_QUEUED:
-	case FONT_FT8_REPLY: 
+	case FONT_FT8_REPLY:
 		{
-		decorated[0] = 0;
 			struct hd_message_struct fms;
 			const char* my_callsign = field_str("MYCALLSIGN");
 			int res = hd_message_parse(&fms, message);
-			if (res == 0) {
-				if (!strcmp(fms.m1, "CQ")) { 
-					if (fms.m4[0] == 0) { // CQ caller grid
-						ff_style(decorated, &fms, style, FONT_LOG, FF_CALLER, FF_GRID, 0);
-					}
-					else { // CQ DX caller grid
-						ff_style(decorated, &fms, style, FONT_LOG, FONT_LOG, FF_CALLER, FF_GRID);
-					}
-				} else if (!strcmp(fms.m1, my_callsign)) 
-				{ // mycall caller grid|report
-					ff_style(decorated, &fms, style, FF_MYCALL, FF_CALLER, FF_GRID, 0);
-				} else if (!strcmp(fms.m2, my_callsign)) 
-				{ // caller mycall grid|report
-					ff_style(decorated, &fms, style, FF_CALLER, FF_MYCALL, FF_GRID, 0);
-				} else 
-				{ // other caller grid|report
-					ff_style(decorated, &fms, style, style, FF_CALLER, FF_GRID, 0);
+			if (res != 0) {
+				// Never turn a valid decoder result into an empty console line.
+				// If decoration fails, display the original text unchanged.
+				strcpy(decorated, message);
+				return res;
+			}
+
+			if (!strcmp(fms.m1, "CQ")) {
+				if (fms.m4[0] == 0) { // CQ caller grid
+					ff_style(decorated, &fms, style, FONT_LOG, FF_CALLER, FF_GRID, 0);
+				}
+				else { // CQ DX caller grid
+					ff_style(decorated, &fms, style, FONT_LOG, FONT_LOG, FF_CALLER, FF_GRID);
 				}
 			}
-			return res;
+			else if (!strcmp(fms.m1, my_callsign)) { // mycall caller grid|report
+				ff_style(decorated, &fms, style, FF_MYCALL, FF_CALLER, FF_GRID, 0);
+			}
+			else if (!strcmp(fms.m2, my_callsign)) { // caller mycall grid|report
+				ff_style(decorated, &fms, style, FF_CALLER, FF_MYCALL, FF_GRID, 0);
+			}
+			else { // other caller grid|report
+				ff_style(decorated, &fms, style, style, FF_CALLER, FF_GRID, 0);
+			}
+			return 0;
 		}
-		break;
 	default:
 		strcpy(decorated, message);
+		return 0;
 	}
-	return 0;
 }

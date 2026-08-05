@@ -4,7 +4,9 @@ CFLAGS ?= -O2 -g
 CFLAGS += -Wall -Wextra -std=c11
 LDLIBS += -lm
 
-TARGET := test_compound_calls
+FT8_TARGET := test_compound_calls
+HIST_TARGET := test_hist_disp
+TARGETS := $(FT8_TARGET) $(HIST_TARGET)
 VECTORS := compound_calls_regression.txt
 FT8_SOURCES := \
 	../ft8_lib/ft8/constants.c \
@@ -16,13 +18,17 @@ FT8_SOURCES := \
 
 .PHONY: all run clean
 
-all: $(TARGET)
+all: $(TARGETS)
 
-$(TARGET): test_compound_calls.c $(FT8_SOURCES)
+$(FT8_TARGET): test_compound_calls.c $(FT8_SOURCES)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-run: $(TARGET)
-	./$(TARGET) $(VECTORS)
+$(HIST_TARGET): test_hist_disp.c ../hist_disp.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
+run: $(TARGETS)
+	./$(FT8_TARGET) $(VECTORS)
+	./$(HIST_TARGET)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGETS)
